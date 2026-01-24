@@ -1,7 +1,4 @@
-package syscall
-
-// golang.org/x/sys/unix doesn't include plan9.
-// plan9 has syscall.Exec.
+package exec
 
 import (
 	"encoding/binary"
@@ -9,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"syscall"
+
+	"golang.org/x/sys/plan9"
 )
 
 var zeroProcAttr syscall.ProcAttr
@@ -33,14 +32,14 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err erro
 	}
 	nextfd++
 
-	dupdevfd, err := syscall.Open("#d", syscall.O_RDONLY)
+	dupdevfd, err := plan9.Open("#d", plan9.O_RDONLY)
 	if err != nil {
 		return err
 	}
 
-	statbuf := make([]byte, syscall.STATMAX)
+	statbuf := make([]byte, plan9.STATMAX)
 	for {
-		n, err := syscall.Pread(dupdevfd, statbuf, 0)
+		n, err := plan9.Pread(dupdevfd, statbuf, 0)
 		if err != nil {
 			return err
 		}
@@ -51,19 +50,18 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err erro
 			var s osString
 			s, b = osStringList(b).Dirname()
 			if s == nil {
-				return syscall.ErrBadStat
+				return plan9.ErrBadStat
 			}
 			if s[len(s)-1] == 'l' {
 				continue
 			}
 			n, _ := strconv.Atoi(string(s.Bytes()))
 			if n != dupdevfd && !slices.Contains(fd, n) {
-				_ = syscall.Close(n)
+				_ = plan9.Close(n)
 			}
 		}
 	}
-	_ = syscall.Close(dupdevfd)
-
+	_ = plan9.Close(dupdevfd)
 	if attr.Dir != "" {
 		err = os.Chdir(attr.Dir)
 		if err != nil {
@@ -73,7 +71,7 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err erro
 
 	for i, f := range fd {
 		if f >= 0 && f < i {
-			_, err = syscall.Dup(f, nextfd)
+			_, err = plan9.Dup(f, nextfd)
 			if err != nil {
 				return err
 			}
@@ -83,13 +81,13 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err erro
 
 	for i, f := range fd {
 		if f == -1 {
-			_ = syscall.Close(i)
+			_ = plan9.Close(i)
 			continue
 		}
 		if f == i {
 			continue
 		}
-		_, err = syscall.Dup(f, i)
+		_, err = plan9.Dup(f, i)
 		if err != nil {
 			return err
 		}
@@ -97,7 +95,7 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err erro
 
 	for _, f := range fd {
 		if f >= len(attr.Files) {
-			_ = syscall.Close(f)
+			_ = plan9.Close(f)
 		}
 	}
 
@@ -127,7 +125,7 @@ func (o osStringList) Dirname() (name osString, rest osStringList) {
 		return
 	}
 	size, o := binary.LittleEndian.Uint16(o), o[2:]
-	if size < syscall.STATFIXLEN || int(size) > len(o) {
+	if size < plan9.STATFIXLEN || int(size) > len(o) {
 		return
 	}
 	name = osString(o[nameOffset:size])

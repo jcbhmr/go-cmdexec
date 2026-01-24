@@ -1,4 +1,4 @@
-package syscall
+package exec
 
 import (
 	"os"
@@ -9,21 +9,14 @@ import (
 )
 
 func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
-	var puid string
 	var uidmap []byte
 	if sys.UidMappings != nil {
-		puid = "/proc/self/uid_map"
 		uidmap = formatIDMappings(sys.UidMappings)
 	}
 
-	var psetgroups string
-	var pgid string
 	var setgroups []byte
 	var gidmap []byte
 	if sys.GidMappings != nil {
-		psetgroups = "/proc/self/setgroups"
-		pgid = "/proc/self/gid_map"
-
 		if sys.GidMappingsEnableSetgroups {
 			setgroups = []byte("allow\x00")
 		} else {
@@ -63,12 +56,10 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		}
 	}
 
-	pid := -1
 	if sys.Foreground {
 		pgrp := sys.Pgid
 		if pgrp == 0 {
-			pid = os.Getpid()
-			pgrp = pid
+			pgrp = os.Getpid()
 		}
 		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSPGRP, pgrp)
 		if err != nil {
@@ -83,19 +74,19 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		}
 
 		if sys.Unshareflags&unix.CLONE_NEWUSER != 0 && sys.GidMappings != nil {
-			err = os.WriteFile(psetgroups, setgroups, 0o600)
+			err = os.WriteFile("/proc/self/setgroups", setgroups, 0o600)
 			if err != nil {
 				return err
 			}
 
-			err = os.WriteFile(pgid, gidmap, 0o600)
+			err = os.WriteFile("/proc/self/gid_map", gidmap, 0o600)
 			if err != nil {
 				return err
 			}
 		}
 
 		if sys.Unshareflags&unix.CLONE_NEWUSER != 0 && sys.UidMappings != nil {
-			err = os.WriteFile(puid, uidmap, 0o600)
+			err = os.WriteFile("/proc/self/uid_map", uidmap, 0o600)
 			if err != nil {
 				return err
 			}
@@ -150,8 +141,8 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 			return err
 		}
 		for _, c := range sys.AmbientCaps {
-			capData[capToIndex(c)].Permitted |= capToMask(c)
-			capData[capToIndex(c)].Inheritable |= capToMask(c)
+			capData[c >> 5].Permitted |= 1 << uint(c&31)
+			capData[c >> 5].Inheritable |= 1 << uint(c&31)
 		}
 		err = unix.Capset(&capHeader, &capData[0])
 		if err != nil {
@@ -236,24 +227,18 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 	return unix.Exec(argv0, argv, attr.Env)
 }
 
-func formatIDMappings(idMap []syscall.SysProcIDMap) []byte {
-	var data []byte
-	for _, im := range idMap {
-		data = append(data, strconv.Itoa(im.ContainerID)+" "+strconv.Itoa(im.HostID)+" "+strconv.Itoa(im.Size)+"\n"...)
-	}
-	return data
-}
-
-// See CAP_TO_INDEX in linux/capability.h:
-func capToIndex(cap uintptr) uintptr { return cap >> 5 }
-
-// See CAP_TO_MASK in linux/capability.h:
-func capToMask(cap uintptr) uint32 { return 1 << uint(cap&31) }
-
 func ptrace(op int, pid int, addr uintptr, data uintptr) (int, error) {
 	r1, _, err := syscall.Syscall6(syscall.SYS_PTRACE, uintptr(op), uintptr(pid), addr, data, 0, 0)
 	if err != 0 {
 		return 0, err
 	}
 	return int(r1), nil
+}
+
+func formatIDMappings(idMap []syscall.SysProcIDMap) []byte {
+	var data []byte
+	for _, im := range idMap {
+		data = append(data, strconv.Itoa(im.ContainerID)+" "+strconv.Itoa(im.HostID)+" "+strconv.Itoa(im.Size)+"\n"...)
+	}
+	return data
 }

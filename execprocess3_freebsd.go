@@ -1,0 +1,173 @@
+package exec
+
+import (
+	"os"
+	"runtime"
+	"syscall"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
+)
+
+func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
+	fd := make([]int, len(attr.Files))
+	nextfd := len(attr.Files)
+	for i, ufd := range attr.Files {
+		if nextfd < int(ufd) {
+			nextfd = int(ufd)
+		}
+		fd[i] = int(ufd)
+	}
+	nextfd++
+
+	if sys.Jail > 0 {
+		_, _, errno := unix.Syscall(unix.SYS_JAIL_ATTACH, uintptr(sys.Jail), 0, 0)
+		if errno != 0 {
+			return errno
+		}
+	}
+
+	if sys.Ptrace {
+		_, err = ptrace(unix.PTRACE_TRACEME, 0, 0, 0)
+		if err != nil {
+			return err
+		}
+	}
+
+	if sys.Setsid {
+		_, err = unix.Setsid()
+		if err != nil {
+			return err
+		}
+	}
+
+	if sys.Setpgid || sys.Foreground {
+		err = unix.Setpgid(0, sys.Pgid)
+		if err != nil {
+			return err
+		}
+	}
+
+	if sys.Foreground {
+		pgrp := sys.Pgid
+		if pgrp == 0 {
+			pgrp = os.Getpid()
+		}
+		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSPGRP, pgrp)
+		if err != nil {
+			return err
+		}
+	}
+
+	if sys.Chroot != "" {
+		err = unix.Chroot(sys.Chroot)
+		if err != nil {
+			return err
+		}
+	}
+
+	if cred := sys.Credential; cred != nil {
+		ngroups := len(cred.Groups)
+		var groups []int
+		if ngroups > 0 {
+			groups = make([]int, ngroups)
+			for i, g := range cred.Groups {
+				groups[i] = int(g)
+			}
+		}
+		if !cred.NoSetGroups {
+			err = unix.Setgroups(groups)
+			if err != nil {
+				return err
+			}
+		}
+		err = unix.Setgid(int(cred.Gid))
+		if err != nil {
+			return err
+		}
+		err = unix.Setuid(int(cred.Uid))
+		if err != nil {
+			return err
+		}
+	}
+
+	if attr.Dir != "" {
+		err = os.Chdir(attr.Dir)
+		if err != nil {
+			return err
+		}
+	}
+
+	if sys.Pdeathsig != 0 {
+		var errno unix.Errno
+		switch runtime.GOARCH {
+		case "386", "arm":
+			_, _, errno = unix.Syscall6(unix.SYS_PROCCTL, freebsdP_PID, 0, 0, freebsdPROC_PDEATHSIG_CTL, uintptr(unsafe.Pointer(&sys.Pdeathsig)), 0)
+		default:
+			_, _, errno = unix.Syscall6(unix.SYS_PROCCTL, freebsdP_PID, 0, freebsdPROC_PDEATHSIG_CTL, uintptr(unsafe.Pointer(&sys.Pdeathsig)), 0, 0)
+		}
+		if errno != 0 {
+			return errno
+		}
+	}
+
+	for i, f := range fd {
+		if f >= 0 && f < i {
+			_, err = unix.FcntlInt(uintptr(f), unix.F_DUP2FD_CLOEXEC, nextfd)
+			if err != nil {
+				return err
+			}
+			fd[i] = nextfd
+			nextfd++
+		}
+	}
+
+	for i, f := range fd {
+		if f == -1 {
+			_ = unix.Close(i)
+			continue
+		}
+		if f == i {
+			_, err = unix.FcntlInt(uintptr(f), unix.F_SETFD, 0)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		err = unix.Dup2(f, i)
+		if err != nil {
+			return err
+		}
+	}
+
+	for i := len(fd); i < 3; i++ {
+		_ = unix.Close(i)
+	}
+
+	if sys.Noctty {
+		err = unix.IoctlSetInt(0, unix.TIOCNOTTY, 0)
+		if err != nil {
+			return err
+		}
+	}
+
+	if sys.Setctty {
+		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSCTTY, 1)
+		if err != nil {
+			return err
+		}
+	}
+
+	return unix.Exec(argv0, argv, attr.Env)
+}
+
+func ptrace(op int, pid int, addr uintptr, data uintptr) (int, error) {
+	r1, _, err := syscall.Syscall6(syscall.SYS_PTRACE, uintptr(op), uintptr(pid), addr, data, 0, 0)
+	if err != 0 {
+		return 0, err
+	}
+	return int(r1), nil
+}
+
+const freebsdPROC_PDEATHSIG_CTL = 11
+const freebsdP_PID = 0

@@ -8,14 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-
-	os2 "github.com/jcbhmr/go-exec/os"
 )
 
-// CmdExt is a trait-like newtype of [exec.Cmd] with additional methods.
+// CmdExt is a trait-like newtype of [os/exec.Cmd] with additional methods.
 //
-// You can use this trait-like newtype by casting [*exec.Cmd]
-// (or equivalent newtype) to [*CmdExt]:
+// You can use this trait-like newtype by casting [*os/exec.Cmd]
+// (or equivalent newtype) to *CmdExt:
 //
 //	var cmd *exec.Cmd = exec.Command("mycommand")
 //	(*CmdExt)(cmd) /* .Exec() or whatever */
@@ -24,8 +22,8 @@ import (
 // of assigning the expression to a new variable.
 type CmdExt exec.Cmd
 
-// Exec is similar to [exec.Cmd.Start]. Instead of spawning a new process, it replaces
-// the current process with the new one using [unix.Exec] or [syscall.Exec].
+// Exec is similar to [os/exec.Cmd.Start]. Instead of spawning a new process, it replaces
+// the current process with the new one using [syscall.Exec].
 //
 // Exec always returns a non-nil error.
 func (c *CmdExt) Exec() error {
@@ -61,7 +59,7 @@ func (c *CmdExt) Exec() error {
 	if err != nil {
 		return err
 	}
-	return os2.ExecProcess(path, argv, attr)
+	return ExecProcess(path, argv, attr)
 }
 
 // lower lowers an [exec.Cmd] instance into the arguments required by [os.StartProcess] and [ExecProcess].
@@ -129,11 +127,11 @@ func (c *CmdExt) argv() []string {
 	}
 }
 
-// attr constructs the [os.ProcAttr] for the [exec.Cmd] that is ready to be passed to [os.StartProcess] or [ExecProcess].
+// attr constructs the [os.ProcAttr] for the [os/exec.Cmd] that is ready to be passed to [os.StartProcess] or [ExecProcess].
 //
-// You must provide stdin, stdout, and stderr as [*os.File] instances because the [exec.Cmd.Stdin],
-// [exec.Cmd.Stdout], and [exec.Cmd.Stderr] fields are of type [io.Reader] and [io.Writer] respectively; they don't have file descriptors.
-// Callers are free to preprocess [exec.Cmd.Stdin], [exec.Cmd.Stdout], and [exec.Cmd.Stderr] as needed
+// You must provide stdin, stdout, and stderr as [*os.File] instances because the Stdin,
+// Stdout, and Stderr fields are of type [io.Reader] and [io.Writer] respectively; they don't have file descriptors.
+// Callers are free to preprocess Stdin, Stdout, and Stderr as needed
 // and provide the underlying [*os.File] instances to this method.
 func (c *CmdExt) attr(stdin, stdout, stderr *os.File) (*os.ProcAttr, error) {
 	files := make([]*os.File, 3, 3+len(c.ExtraFiles))

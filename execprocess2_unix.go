@@ -1,6 +1,6 @@
 //go:build unix
 
-package syscall
+package exec
 
 import (
 	"errors"
