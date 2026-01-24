@@ -1,16 +1,19 @@
-//go:build dragonfly || netbsd || (openbsd && mips64)
+//go:build darwin || (openbsd && !mips64)
 
 package exec
 
 import (
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
+var forked sync.Mutex
+
+func execProcessUnix(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
 	fd := make([]int, len(attr.Files))
 	nextfd := len(attr.Files)
 	for i, ufd := range attr.Files {
@@ -20,6 +23,9 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		fd[i] = int(ufd)
 	}
 	nextfd++
+
+	forked.Lock()
+	defer forked.Unlock()
 
 	if sys.Ptrace {
 		_, err = ptrace(unix.PTRACE_TRACEME, 0, 0, 0)
@@ -47,7 +53,7 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		if pgrp == 0 {
 			pgrp = os.Getpid()
 		}
-		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSPGRP, pgrp)
+		err = unix.IoctlSetPointerInt(int(attr.Files[0]), unix.TIOCSPGRP, pgrp)
 		if err != nil {
 			return err
 		}
@@ -94,16 +100,17 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 
 	for i, f := range fd {
 		if f >= 0 && f < i {
-			if runtime.GOOS == "netbsd" || (runtime.GOOS == "openbsd" && runtime.GOARCH == "mips64") {
-				err = unix.Dup3(f, nextfd, unix.O_CLOEXEC)
-			} else if runtime.GOOS == "dragonfly" {
-				_, err = unix.FcntlInt(uintptr(f), unix.F_DUP2FD_CLOEXEC, nextfd)
+			if runtime.GOOS == "openbsd" {
+				err = openbsdlibcDup3(f, nextfd, unix.O_CLOEXEC)
 			} else {
 				err = unix.Dup2(f, nextfd)
 				if err != nil {
 					return err
 				}
 				unix.CloseOnExec(nextfd)
+			}
+			if err != nil {
+				return err
 			}
 			fd[i] = nextfd
 			nextfd++
@@ -140,7 +147,7 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 	}
 
 	if sys.Setctty {
-		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSCTTY, 1)
+		err = unix.IoctlSetInt(sys.Ctty, unix.TIOCSCTTY, 0)
 		if err != nil {
 			return err
 		}
@@ -148,6 +155,9 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 
 	return unix.Exec(argv0, argv, attr.Env)
 }
+
+// Set in exec_openbsdlibc.go
+var openbsdlibcDup3 func(oldfd int, newfd int, flags int) error
 
 func ptrace(op int, pid int, addr uintptr, data uintptr) (int, error) {
 	r1, _, err := syscall.Syscall6(syscall.SYS_PTRACE, uintptr(op), uintptr(pid), addr, data, 0, 0)

@@ -1,17 +1,18 @@
-//go:build aix || solaris
-
 package exec
 
 import (
-	"errors"
 	"os"
 	"runtime"
+	"sync"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
+var forked sync.Mutex
+
+func execProcessUnix(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
 	fd := make([]int, len(attr.Files))
 	nextfd := len(attr.Files)
 	for i, ufd := range attr.Files {
@@ -21,6 +22,23 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		fd[i] = int(ufd)
 	}
 	nextfd++
+
+	forked.Lock()
+	defer forked.Unlock()
+
+	if sys.Jail > 0 {
+		_, _, errno := unix.Syscall(unix.SYS_JAIL_ATTACH, uintptr(sys.Jail), 0, 0)
+		if errno != 0 {
+			return errno
+		}
+	}
+
+	if sys.Ptrace {
+		_, err = ptrace(unix.PTRACE_TRACEME, 0, 0, 0)
+		if err != nil {
+			return err
+		}
+	}
 
 	if sys.Setsid {
 		_, err = unix.Setsid()
@@ -41,8 +59,7 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		if pgrp == 0 {
 			pgrp = os.Getpid()
 		}
-		// err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSPGRP, pgrp)
-		err = errors.New("cannot use unix.TIOCSPGRP (untyped int constant 18446744071562359926) as int value in argument to unix.IoctlSetPointerInt (overflows)")
+		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSPGRP, pgrp)
 		if err != nil {
 			return err
 		}
@@ -87,21 +104,26 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		}
 	}
 
+	if sys.Pdeathsig != 0 {
+		var errno unix.Errno
+		switch runtime.GOARCH {
+		case "386", "arm":
+			_, _, errno = unix.Syscall6(unix.SYS_PROCCTL, freebsdP_PID, 0, 0, freebsdPROC_PDEATHSIG_CTL, uintptr(unsafe.Pointer(&sys.Pdeathsig)), 0)
+		default:
+			_, _, errno = unix.Syscall6(unix.SYS_PROCCTL, freebsdP_PID, 0, freebsdPROC_PDEATHSIG_CTL, uintptr(unsafe.Pointer(&sys.Pdeathsig)), 0, 0)
+		}
+		if errno != 0 {
+			return errno
+		}
+	}
+
 	for i, f := range fd {
 		if f >= 0 && f < i {
-			switch runtime.GOOS {
-			case "illumos", "solaris":
-				_, err = unix.FcntlInt(uintptr(f), solarisF_DUP2FD_CLOEXEC, nextfd)
-			default:
-				err = unix.Dup2(f, nextfd)
-				if err != nil {
-					return err
-				}
-				unix.CloseOnExec(nextfd)
-			}
+			_, err = unix.FcntlInt(uintptr(f), unix.F_DUP2FD_CLOEXEC, nextfd)
 			if err != nil {
 				return err
 			}
+			fd[i] = nextfd
 			nextfd++
 		}
 	}
@@ -136,10 +158,7 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 	}
 
 	if sys.Setctty {
-		if solarisTIOCSCTTY == 0 {
-			return unix.ENOSYS
-		}
-		err = unix.IoctlSetInt(sys.Ctty, solarisTIOCSCTTY, 0)
+		err = unix.IoctlSetPointerInt(sys.Ctty, unix.TIOCSCTTY, 1)
 		if err != nil {
 			return err
 		}
@@ -148,6 +167,13 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 	return unix.Exec(argv0, argv, attr.Env)
 }
 
-// Set in unixconsts_solaris.go
-var solarisF_DUP2FD_CLOEXEC int
-var solarisTIOCSCTTY int
+func ptrace(op int, pid int, addr uintptr, data uintptr) (int, error) {
+	r1, _, err := syscall.Syscall6(syscall.SYS_PTRACE, uintptr(op), uintptr(pid), addr, data, 0, 0)
+	if err != 0 {
+		return 0, err
+	}
+	return int(r1), nil
+}
+
+const freebsdPROC_PDEATHSIG_CTL = 11
+const freebsdP_PID = 0

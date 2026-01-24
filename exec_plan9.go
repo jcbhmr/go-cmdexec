@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/plan9"
@@ -13,7 +14,9 @@ import (
 var zeroProcAttr syscall.ProcAttr
 var zeroSysProcAttr syscall.SysProcAttr
 
-func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err error) {
+var forked sync.Mutex
+
+func execProcess(argv0 string, argv []string, attr *syscall.ProcAttr) (err error) {
 	if attr == nil {
 		attr = &zeroProcAttr
 	}
@@ -31,6 +34,9 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) (err erro
 		fd[i] = int(ufd)
 	}
 	nextfd++
+
+	forked.Lock()
+	defer forked.Unlock()
 
 	dupdevfd, err := plan9.Open("#d", plan9.O_RDONLY)
 	if err != nil {

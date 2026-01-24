@@ -13,7 +13,7 @@ import (
 var zeroProcAttr syscall.ProcAttr
 var zeroSysProcAttr unix.SysProcAttr
 
-func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) error {
+func execProcess(argv0 string, argv []string, attr *syscall.ProcAttr) error {
 	if attr == nil {
 		attr = &zeroProcAttr
 	}
@@ -34,5 +34,5 @@ func execProcess2(argv0 string, argv []string, attr *syscall.ProcAttr) error {
 	}
 
 	// Platform-specific
-	return execProcess3(argv0, argv, attr, sys)
+	return execProcessUnix(argv0, argv, attr, sys)
 }

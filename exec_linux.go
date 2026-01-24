@@ -3,12 +3,15 @@ package exec
 import (
 	"os"
 	"strconv"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
+var forked sync.Mutex
+
+func execProcessUnix(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix.SysProcAttr) (err error) {
 	var uidmap []byte
 	if sys.UidMappings != nil {
 		uidmap = formatIDMappings(sys.UidMappings)
@@ -34,6 +37,9 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 		fd[i] = int(ufd)
 	}
 	nextfd++
+
+	forked.Lock()
+	defer forked.Unlock()
 
 	if len(sys.AmbientCaps) > 0 {
 		err = unix.Prctl(unix.PR_SET_KEEPCAPS, 1, 0, 0, 0)
@@ -141,8 +147,8 @@ func execProcess3(argv0 string, argv []string, attr *syscall.ProcAttr, sys *unix
 			return err
 		}
 		for _, c := range sys.AmbientCaps {
-			capData[c >> 5].Permitted |= 1 << uint(c&31)
-			capData[c >> 5].Inheritable |= 1 << uint(c&31)
+			capData[c>>5].Permitted |= 1 << uint(c&31)
+			capData[c>>5].Inheritable |= 1 << uint(c&31)
 		}
 		err = unix.Capset(&capHeader, &capData[0])
 		if err != nil {
